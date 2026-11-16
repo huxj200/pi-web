@@ -108,6 +108,7 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
       historyMenuOpen: false, inputHistory: ["previous"], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [{}], slashActiveIndex: 0,
       atMenuOpen: false, atQuery: null, atMatches: [{}], atActiveIndex: 0,
+      hashMenuOpen: false, hashQuery: null, hashMatches: [], hashActiveIndex: 0, applyHashCompletion() {},
       onSteer() {}, onFollowUp() {},
       sendQueued(mode) { action = mode; }, handleSend() { action = "send"; },
       applySlashCommand() { action = "slash"; },
@@ -249,7 +250,7 @@ test("a plain-text paste the browser dropped is inserted from the event's own te
           };
         }
       },
-      valueRef: { current: "" }, setValue() {}, setHistoryMenuOpen() {}, updateAtQuery() {}, requestAnimationFrame() {},
+      valueRef: { current: "" }, setValue() {}, setHistoryMenuOpen() {}, updateAtQuery() {}, updateHashQuery() {}, requestAnimationFrame() {},
     });
     const nativeEvent = { defaultPrevented: false };
     handler({
@@ -300,6 +301,7 @@ test("file mention arrows wrap around the match list", () => {
       historyMenuOpen: false, inputHistory: [], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [], slashActiveIndex: 0,
       atMenuOpen: true, atQuery: {}, atMatches: Array.from({ length }, () => ({})), atActiveIndex,
+      hashMenuOpen: false, hashQuery: null, hashMatches: [], hashActiveIndex: 0, applyHashCompletion() {}, setHashMenuOpen() {}, setHashActiveIndex() {},
       onSteer() {}, onFollowUp() {},
       sendQueued() {}, handleSend() {},
       applySlashCommand() {},
