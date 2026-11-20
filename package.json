@@ -36,7 +36,8 @@
   ],
   "scripts": {
     "postinstall": "node bin/prepare-terminal.js",
-    "dev": "next dev -H 127.0.0.1 -p 30141",
+    "dev": "env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY next dev -H 127.0.0.1 -p 30141",
+    "dev:local": "env -u __NEXT_PRIVATE_STANDALONE_CONFIG -u __NEXT_PRIVATE_ORIGIN next dev -H 127.0.0.1 -p 30142",
     "dev:lan": "next dev -H 0.0.0.0 -p 30141",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 30141",
