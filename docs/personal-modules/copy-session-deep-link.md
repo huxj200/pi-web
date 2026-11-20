@@ -26,4 +26,4 @@
 ## 当前实现状态
 
 - fork 菜单仅剩「复制会话文件路径」项（`copy-session-path`），位于普通/置顶/归档会话菜单；类型检查通过。
-- **开发中**：未提交、未部署；菜单项分发逻辑与 i18n（`sidebar.copySessionPath`）由并行开发会话补充。
+- **开发中**：菜单项分发逻辑与 i18n（`sidebar.copySessionPath`）已完成，并作为本地提交 `fddc7f3` 落在 `personal/customized`；未部署。

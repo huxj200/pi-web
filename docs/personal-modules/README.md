@@ -4,7 +4,7 @@
 
 ## 当前基线与分支状态
 
-核实日期：2026-11-17（Asia/Shanghai）。
+核实日期：2026-11-20（状态更新）；基线事实为 2026-11-17 核实。
 
 | 项目 | 当前核实结果 |
 | --- | --- |
@@ -14,11 +14,11 @@
 | npm 发布包 | `@agegr/pi-web@0.17.0` 的 `gitHead` 为 `174bff967807cdb59abb0204198d3d7cc19c862d`；与当前官方基线一致 |
 | 个人 Fork 的 `origin/main` | `174bff967807cdb59abb0204198d3d7cc19c862d`，与官方基线一致 |
 | 个人主线 `personal/main` | 本地分支及 `origin/personal/main` 当前均为 `174bff967807cdb59abb0204198d3d7cc19c862d`；提交层面与官方基线相同，还未含个人模块提交 |
-| 当前本机集成候选 | 工作树 `/Users/xiaoming/projects/AI/aiTools/pi-web-suite/pi-web-personal`，分支 `personal/customized`，HEAD 为 `174bff967807cdb59abb0204198d3d7cc19c862d`；跨会话引用补丁已应用并暂存，但尚未形成集成提交 |
+| 当前本机集成候选 | 工作树 `/Users/xiaoming/projects/AI/aiTools/pi-web-suite/pi-web-personal`，分支 `personal/customized`，HEAD 为 `e4dbe84`（基于官方 `174bff9` 的 3 个个人提交）；工作树干净 |
 | 功能来源分支 | `feature/current-customizations`，个人源提交 `31510e6c48ca0647d417ea554869543fdf33f9b5`，基于较早官方代码；原功能分支仍保留 |
 | 本机运行服务 | `127.0.0.1:30141` 当前由 `aiTools/node_modules/@agegr/pi-web` 的 npm `0.17.0` 提供（2026-11-17 核实，进程为 `next-server (v16.4.4)`），不含本候选改动；个人模块未部署 |
 
-提交哈希说明的是 Git 提交位置，不代表工作树一定干净。当前候选的 `HEAD` 与官方提交相同，但其暂存区包含个人改动；因此它是“官方基线 + 待提交的个人改动”，不能称为与官方源码完全相同。远端 `personal/main` 目前仍是官方基线提交，当前候选尚未进入该分支。
+提交哈希说明的是 Git 提交位置，不代表工作树一定干净。当前候选的 `HEAD` 已在官方基线之上含 3 个本地个人提交（跨会话引用、复制会话文件路径、模块文档），工作树干净；这些提交只在本地，远端 `personal/main` 与本地 `personal/main` 目前仍停在官方基线提交，当前候选尚未进入该分支。
 
 ## 状态定义
 
@@ -34,8 +34,8 @@
 
 | 模块 | 类型 | 状态 | 来源/版本 | 说明 |
 | --- | --- | --- | --- | --- |
-| [跨会话引用](./cross-session-references.md) | Pi Web 改动 | **开发中**：已在本机 `personal/customized` 候选工作树应用并暂存；`personal/main` 远端尚未包含，也未部署；上游化 issue [#1716](https://github.com/agegr/pi-web/issues/1716) 已发布（2026-11-17），待官方表态 | `feature/current-customizations`，`31510e6c48ca0647d417ea554869543fdf33f9b5` | 输入框 `#` 选择历史会话，并在发送时展开有边界的历史上下文 |
-| [会话复制（文件路径/深链接）](./copy-session-deep-link.md) | fork 菜单 + 官方原生 | **开发中**：fork 菜单仅保留「复制会话文件路径」项（`copy-session-path`，`sidebar-actions.ts` 等，未提交未部署）；「复制会话链接」项已移除 | 官方 v0.17.0 原生（标题 `?session=` 链接、Session info 复制按钮）+ fork 兜底 | 复制会话文件路径供 Codex 等 agent 读取（无原生等价，保留）；深链接用官方原生（标题右键「复制链接地址」）；脚本 v0.2.1 曾 E2E 实测通过后弃用；决策依据见 [#1713](https://github.com/agegr/pi-web/issues/1713) / [#1714](https://github.com/agegr/pi-web/pull/1714) |
+| [跨会话引用](./cross-session-references.md) | Pi Web 改动 | **开发中**：已作为本地候选提交 `d573121` 落在 `personal/customized`；`personal/main`（本地与远端）尚未包含，也未部署；上游化 issue [#1716](https://github.com/agegr/pi-web/issues/1716) 已发布（2026-11-17），待官方表态 | `feature/current-customizations`，`31510e6c48ca0647d417ea554869543fdf33f9b5` | 输入框 `#` 选择历史会话，并在发送时展开有边界的历史上下文 |
+| [会话复制（文件路径/深链接）](./copy-session-deep-link.md) | fork 菜单 + 官方原生 | **开发中**：fork 菜单仅保留「复制会话文件路径」项（`copy-session-path`，`sidebar-actions.ts` 等），已作为本地候选提交 `fddc7f3`；未部署；「复制会话链接」项已移除 | 官方 v0.17.0 原生（标题 `?session=` 链接、Session info 复制按钮）+ fork 兜底 | 复制会话文件路径供 Codex 等 agent 读取（无原生等价，保留）；深链接用官方原生（标题右键「复制链接地址」）；脚本 v0.2.1 曾 E2E 实测通过后弃用；决策依据见 [#1713](https://github.com/agegr/pi-web/issues/1713) / [#1714](https://github.com/agegr/pi-web/pull/1714) |
 
 ## 官方集成钩子清单（零源码差异的出口）
 

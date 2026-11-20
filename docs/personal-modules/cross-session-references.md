@@ -3,7 +3,7 @@
 ## 状态与来源
 
 - **类型**：Pi Web 本身的 UI、API 和服务端改动，不是可单独安装的 pi 扩展。
-- **状态**：**开发中**。功能来源提交为 `31510e6c48ca0647d417ea554869543fdf33f9b5`（`feature/current-customizations`）。截至 2026-11-17，该改动已应用并暂存在本机 `/Users/xiaoming/projects/AI/aiTools/pi-web-suite/pi-web-personal` 的 `personal/customized` 工作树；本地 `personal/main` 与 `origin/personal/main` 仍停在官方基线，没有个人功能提交。
+- **状态**：**开发中**。功能来源提交为 `31510e6c48ca0647d417ea554869543fdf33f9b5`（`feature/current-customizations`）。截至 2026-11-20，该改动已作为本地提交 `d573121` 落在本机 `/Users/xiaoming/projects/AI/aiTools/pi-web-suite/pi-web-personal` 的 `personal/customized` 分支；本地 `personal/main` 与 `origin/personal/main` 仍停在官方基线，没有个人功能提交。
 - **官方兼容基线**：`upstream/main` 的 `174bff967807cdb59abb0204198d3d7cc19c862d`，Pi Web `0.17.0`，pi SDK 包 `1.5.2`。官方 `v0.17.0` 标签及 npm `gitHead` 在核实时均指向该提交。
 - **上游化计划**：已按 CONTRIBUTING 发布官方 issue [#1716](https://github.com/agegr/pi-web/issues/1716)（中文，2026-11-17），待官方表态后决定是否整理 PR。若官方接受，本模块从 fork 差异中移除，差异归零。
 - **部署状态**：**未部署**。2026-11-17 核对时，30141 服务仍由上层 aiTools 目录的 npm 安装包 `@agegr/pi-web@0.15.0` 启动。
