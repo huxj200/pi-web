@@ -101,6 +101,8 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
     ["an open extension dialog hides slash completion", {}, { isStreaming: false, extensionUiOpen: true, slashMenuOpen: true, slashQuery: "help" }, "send"],
     ["an open extension dialog hides file completion", {}, { isStreaming: false, extensionUiOpen: true, atMenuOpen: true, atQuery: {} }, "send"],
     ["an open extension dialog hides history selection", {}, { isStreaming: false, extensionUiOpen: true, historyMenuOpen: true }, "send"],
+    ["session completion takes priority", { key: "Tab" }, { hashMenuOpen: true, hashQuery: {}, hashMatches: [{}] }, "hash"],
+    ["an open extension dialog hides session completion", { key: "Tab" }, { extensionUiOpen: true, hashMenuOpen: true, hashQuery: {}, hashMatches: [{}] }, "native"],
   ];
   for (const [name, keys, state, expected] of cases) {
     let action = "native";
@@ -113,7 +115,7 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
       historyMenuOpen: false, inputHistory: ["previous"], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [{}], slashActiveIndex: 0,
       atMenuOpen: false, atQuery: null, atMatches: [{}], atActiveIndex: 0,
-      hashMenuOpen: false, hashQuery: null, hashMatches: [], hashActiveIndex: 0, applyHashCompletion() {},
+      hashMenuOpen: false, hashQuery: null, hashMatches: [], hashActiveIndex: 0, applyHashCompletion() { action = "hash"; },
       onSteer() {}, onFollowUp() {},
       sendQueued(mode) { action = mode; }, handleSend() { action = "send"; },
       applySlashCommand() { action = "slash"; },

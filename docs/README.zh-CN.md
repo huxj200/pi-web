@@ -146,6 +146,8 @@ npm run lint
 
 贡献者文档：[国际化](./i18n.md)和[发布流程](./release.md)。
 
+个人定制维护：[个人模块索引](./personal-modules/README.md)，记录定制版官方基线、模块状态和逐模块说明。
+
 ## 仓库结构
 
 ```text

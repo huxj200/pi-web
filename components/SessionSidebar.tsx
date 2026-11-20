@@ -5,6 +5,7 @@ import type { SessionInfo } from "@/lib/types";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
+import { copyText } from "@/lib/clipboard";
 import { getProjectActivity, getRecentProjects } from "@/lib/project-groups";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import {
@@ -131,6 +132,7 @@ import {
   TerminalIcon,
   TrashIcon,
   UploadIcon,
+  CopyIcon,
 } from "./SidebarIcons";
 
 interface FileManagerAvailability {
@@ -351,6 +353,7 @@ const SIDEBAR_HEADER_HEIGHT = 36;
 
 const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
   "open-new-tab": "sidebar.openInNewTab",
+  "copy-session-path": "sidebar.copySessionPath",
   pin: "sidebar.pin",
   unpin: "sidebar.unpin",
   rename: "sidebar.rename",
@@ -365,6 +368,7 @@ const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
 function sessionActionIcon(id: SessionMenuActionId): ReactNode {
   switch (id) {
     case "open-new-tab": return <OpenInNewTabIcon />;
+    case "copy-session-path": return <CopyIcon />;
     case "pin": return <PinIcon />;
     case "unpin": return <PinOffIcon />;
     case "rename": return <PencilIcon />;
@@ -2213,9 +2217,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     window.open(sessionDeepLink(family.root.id), "_blank", "noopener,noreferrer");
   }, []);
 
+  // Copy the session's file path (the row menu's copy action): the .jsonl file
+  // another agent (Codex, a script) can read, exactly as it sits on disk. The
+  // toast says whether the clipboard took it; a refused copy names the
+  // failure. Nothing is shared or uploaded: the clipboard is the whole journey.
+  const copySessionPath = useCallback((family: SessionFamily) => {
+    if (family.root.transient) return;
+    copyText(family.root.path).then(
+      () => showToast(t("sidebar.copySessionPathCopied")),
+      () => showToast(t("sidebar.copySessionPathFailed")),
+    );
+  }, [showToast, t]);
+
   const runSessionAction = (id: SessionMenuActionId, row: SessionRow, shiftKey: boolean) => {
     const { family } = row;
     switch (id) {
+      case "copy-session-path": copySessionPath(family); break;
       case "open-new-tab": openFamilyInNewTab(family); break;
       case "pin": setFamilyPinned(family, true); break;
       case "unpin": setFamilyPinned(family, false); break;
