@@ -6,6 +6,8 @@
 npm run dev   # port 30141
 ```
 
+Before syncing official source, integrating personal features, or changing the local deployment, read [the personal development workflow](docs/personal-development-workflow.md).
+
 Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 
 **Never run `next build` during dev**: it pollutes `.next/` and breaks `npm run dev`.
