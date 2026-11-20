@@ -6,7 +6,7 @@
 npm run dev   # port 30141
 ```
 
-Before syncing official source, integrating personal features, or changing the local deployment, read [the personal development workflow](docs/personal-development-workflow.md).
+Before syncing official source, integrating personal features, creating or pushing a branch, or changing the local deployment, read the workflow and branch rules in `../personal-docs/` (outside this repository).
 
 Typecheck: `node_modules/.bin/tsc --noEmit` · Lint: `npm run lint`
 
