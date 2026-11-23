@@ -4,15 +4,15 @@
  * (nothing disk-backed for a transient session, archive disabled while a
  * family runs) are testable without a DOM. Fork leaves the source untouched
  * (it copies the finished entries of its current branch), so it is offered
- * everywhere: while the family runs and from the archive too. Copying a
- * session's file path only copies, never changes the session, so the copy
- * action sits next to Open in new tab and appears wherever a saved session
- * does. Open in new tab
- * only navigates (a browser tab loads the session's link): it is offered
- * everywhere a saved session is, after the actions that manage the session and
- * before Delete. Never first: a menu's first item takes focus when it opens,
- * so Enter right after opening would leave the tab. Also the requests behind
- * a project group's "Delete all sessions", with `fetch` passed in.
+ * everywhere: while the family runs and from the archive too. Insert into chat
+ * only adds a chip to the open composer (nothing is written), so it is offered
+ * everywhere a saved session is, beside Open in new tab; copying a session's
+ * file path only copies, never changes the session, so that one sits there too.
+ * Open in new tab only navigates (a browser tab loads the session's link): it
+ * is offered everywhere a saved session is, after the actions that manage the
+ * session and before Delete. Never first: a menu's first item takes focus when
+ * it opens, so Enter right after opening would leave the tab. Also the requests
+ * behind a project group's "Delete all sessions", with `fetch` passed in.
  */
 
 import { projectNameOf, type SidebarFamilyStatus, type SidebarProject, type SidebarRow } from "./session-tree";
@@ -20,6 +20,7 @@ import type { SessionUiStateRequest } from "./session-ui-state-shared";
 
 export type SessionMenuActionId =
   | "open-new-tab"
+  | "insert-into-chat"
   | "copy-session-path"
   | "pin"
   | "unpin"
@@ -53,6 +54,7 @@ export function sessionMenuEntries(
       { kind: "action", id: "pin", shortcut: "P" },
       { kind: "action", id: "rename", shortcut: "R" },
       { kind: "action", id: "fork", shortcut: "F" },
+      { kind: "action", id: "insert-into-chat", shortcut: "I" },
       { kind: "action", id: "copy-session-path" },
       openNewTab,
       { kind: "separator" },
@@ -68,6 +70,7 @@ export function sessionMenuEntries(
     status.running
       ? { kind: "action", id: "archive", shortcut: "A", disabledReason: "running" }
       : { kind: "action", id: "archive", shortcut: "A" },
+    { kind: "action", id: "insert-into-chat", shortcut: "I" },
     { kind: "action", id: "copy-session-path" },
     openNewTab,
     { kind: "separator" },

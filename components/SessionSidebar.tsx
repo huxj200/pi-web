@@ -3,6 +3,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
+import { clearDraft } from "@/lib/draft-store";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
 import { copyText } from "@/lib/clipboard";
@@ -219,6 +220,8 @@ export interface SelectSessionOptions {
 interface Props {
   selectedSessionId: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number, options?: SelectSessionOptions) => void;
+  /** The row menu's "Insert into chat": the session joins the open composer as a chip. */
+  onInsertSessionReference?: (session: SessionInfo) => void;
   /** A side chat's search hit: its parent opens, then the side chat's tab. */
   onSelectSideChat: (session: SessionInfo) => void;
   /** projectKey: the target's project identity when it is known (a group's "+", the composer's bar). */
@@ -353,6 +356,7 @@ const SIDEBAR_HEADER_HEIGHT = 36;
 
 const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
   "open-new-tab": "sidebar.openInNewTab",
+  "insert-into-chat": "sidebar.insertIntoChat",
   "copy-session-path": "sidebar.copySessionPath",
   pin: "sidebar.pin",
   unpin: "sidebar.unpin",
@@ -368,6 +372,7 @@ const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
 function sessionActionIcon(id: SessionMenuActionId): ReactNode {
   switch (id) {
     case "open-new-tab": return <OpenInNewTabIcon />;
+    case "insert-into-chat": return <MessageIcon />;
     case "copy-session-path": return <CopyIcon />;
     case "pin": return <PinIcon />;
     case "unpin": return <PinOffIcon />;
@@ -519,7 +524,7 @@ function buttonAnchor(element: HTMLElement, align: "start" | "end"): SidebarMenu
   return { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, align };
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onInsertSessionReference, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -2040,7 +2045,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     setConfirmDeleteRootId((current) => (current === session.id ? null : current));
     try {
       // The server deletes the family's subagent sessions with it.
-      await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      const res = await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+      // Drafts are kept in this browser's storage: they go with their sessions.
+      if (res.ok) [session, ...family.subagents].forEach((member) => clearDraft(member.id));
       onSessionDeleted?.(session.id);
       void loadSessions();
     } catch {
@@ -2234,6 +2241,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     switch (id) {
       case "copy-session-path": copySessionPath(family); break;
       case "open-new-tab": openFamilyInNewTab(family); break;
+      case "insert-into-chat": onInsertSessionReference?.(family.root); break;
       case "pin": setFamilyPinned(family, true); break;
       case "unpin": setFamilyPinned(family, false); break;
       case "rename": startRename(family); break;
@@ -2327,7 +2335,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     showToast(t("sidebar.deletingSessions"));
     try {
       const outcome = await deleteProjectSessions(ids, fetch);
-      for (const id of outcome.deleted) onSessionDeleted?.(id);
+      for (const id of outcome.deleted) {
+        clearDraft(id);
+        onSessionDeleted?.(id);
+      }
       // A group goes with its last session (in the tree, unless it is
       // current or pinned): focus that fell to the page with it moves on.
       void loadSessions().then(() => focusAfterCommit(focusTarget));
