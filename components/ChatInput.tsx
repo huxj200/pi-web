@@ -34,6 +34,7 @@ import { formatShortRelativeTime } from "@/lib/i18n/format";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { quoteSeparator } from "@/lib/quoted-selection";
 import { isBareMcpCommand, isBuiltinMcpCommand } from "@/lib/mcp-command";
+import { formatCompactCount } from "@/lib/session-stats-format";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { ImagePreview } from "./ImagePreview";
 import { DismissButton } from "./DismissButton";
@@ -251,7 +252,8 @@ export function replaceLinksWithMarkdown(
  * overflows the box stays cut off instead of showing a scrollbar.
  *
  * The "auto" step clamps scrollTop to 0, so the scroll the browser gave the
- * caret is captured first and restored last.
+ * caret is captured first and restored last; a caret at the end follows the
+ * end of the text instead.
  */
 export function autoGrowTextarea(ta: HTMLTextAreaElement): void {
   // The "auto" step fits the whole text, which clamps scrollTop to 0; keep the
@@ -262,6 +264,10 @@ export function autoGrowTextarea(ta: HTMLTextAreaElement): void {
   ta.style.height = `${ta.value ? Math.min(ta.scrollHeight, 200) : ta.clientHeight}px`;
   ta.style.overflowY = ta.value && ta.scrollHeight > ta.clientHeight ? "auto" : "hidden";
   ta.scrollTop = scrollTop;
+  // A re-wrap with no keystroke (the run's buttons narrowing the composer, a
+  // font change) brings no browser caret scroll, so the old offset can leave an
+  // end caret below the fold.
+  if (ta.value) scrollTextareaCaretIntoView(ta);
 }
 
 /**
@@ -334,12 +340,6 @@ const THINKING_LEVEL_DESC_KEYS: Record<typeof THINKING_LEVELS[number], string> =
   auto: "chat.thinkingUseDefault", off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
   medium: "chat.thinkingMedium", high: "chat.thinkingHigh", xhigh: "chat.thinkingXhigh", max: "chat.thinkingMax",
 };
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return tokens.toLocaleString();
-}
 
 type BuiltinSlashCommand = {
   name: string;
@@ -1469,17 +1469,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, [atTokenActive, cwd]);
 
   // ── # session autocomplete ──────────────────────────────────────────────
-  const hashTokenKey = hashQuery === null ? null : `${hashQuery.start}:${hashQuery.query}`;
-  useEffect(() => {
-    if (hashTokenKey === null) {
-      setHashMenuOpen(false);
-      setHashActiveIndex(0);
-      return;
-    }
-    setHashMenuOpen(true);
-    setHashActiveIndex(0);
-  }, [hashTokenKey]);
-
   // The composer's project root (from the catalogue) ranks that project's
   // sessions first, as OpenCode ranks its @ session search.
   const currentProjectRoot = React.useMemo(() => {
@@ -1492,6 +1481,21 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       ? filterSessionEntries(hashSessions, hashQuery.query, HASH_RESULT_LIMIT, currentProjectRoot)
       : []
   ), [hashQuery, hashSessions, currentProjectRoot]);
+
+  // A query of several words that matches nothing is prose after a `#tag`, not
+  // a search: the menu closes rather than stay up (taking the arrow keys) for
+  // the rest of the line.
+  const hashGaveUp = hashQuery !== null && hashSessions !== null && hashMatches.length === 0 && /\s/.test(hashQuery.query);
+  const hashTokenKey = hashQuery === null || hashGaveUp ? null : `${hashQuery.start}:${hashQuery.query}`;
+  useEffect(() => {
+    if (hashTokenKey === null) {
+      setHashMenuOpen(false);
+      setHashActiveIndex(0);
+      return;
+    }
+    setHashMenuOpen(true);
+    setHashActiveIndex(0);
+  }, [hashTokenKey]);
 
   // Fetch the session catalogue when the menu opens, once per component
   // instance; the server caches its own scan.
@@ -1642,16 +1646,18 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, []);
 
   const sendToSideChat = useCallback(() => {
-    const msg = value.trim();
-    if (!msg || attachedImages.length || !onSideChat) return;
+    const text = value.trim();
+    if (!text || attachedImages.length || !onSideChat) return;
     clearInput();
-    onSideChat(msg);
+    onSideChat(withSessionReferences(text, attachedReferencesRef.current));
   }, [value, attachedImages, onSideChat, clearInput]);
 
   const sendQueued = useCallback((mode: "steer" | "followup") => {
-    const msg = value.trim();
+    const text = value.trim();
+    // A steer or follow-up carries the chips too: clearInput() drops them.
+    const msg = withSessionReferences(text, attachedReferencesRef.current);
     if (!msg && !attachedImages.length) return;
-    if (msg.startsWith("!") && !attachedImages.length) {
+    if (text.startsWith("!") && !attachedImages.length) {
       // A shell command is never steered into the run as text.
       void handleSend();
       return;
@@ -2064,7 +2070,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     ? Math.max(0, compactResult.tokensBefore - compactResult.estimatedTokensAfter)
     : 0;
   const compactResultText = compactResult
-    ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
+    ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatCompactCount(compactResult.tokensBefore)} -> ${formatCompactCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatCompactCount(compactSavedTokens) })})`
     : null;
   const resolvedThinkingLevel = thinkingLevel && thinkingLevel !== "auto" ? thinkingLevel : null;
   const thinkingDisplayLabel = (() => {
@@ -2327,7 +2333,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         )}
         {/* Image previews */}
         {attachedImages.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>            {attachedImages.map((img, i) => (
+          <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+            {attachedImages.map((img, i) => (
               <div key={i} style={{ position: "relative", flexShrink: 0 }}>
                 <ImagePreview key={img.previewUrl} src={img.previewUrl}>
                   {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -6,7 +6,6 @@ import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib
 import { clearDraft } from "@/lib/draft-store";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { newSessionDeepLink, sessionDeepLink } from "@/lib/session-links";
-import { copyText } from "@/lib/clipboard";
 import { getProjectActivity, getRecentProjects } from "@/lib/project-groups";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import {
@@ -108,6 +107,7 @@ import { PiWebTitle } from "./PiWebTitle";
 import { ProjectWorktreePicker, type ProjectWorktreePickerHandle, type WorktreeRemoval } from "./ProjectWorktreePicker";
 import { SessionSearch } from "./SessionSearch";
 import { SessionTree, sessionRowTitle, type SessionTreeReveal } from "./SessionTree";
+import { copyText } from "@/lib/clipboard";
 import { SidebarMenu, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
 import { SidebarToast, type SidebarToastAction, type SidebarToastData } from "./SidebarToast";
 import {
@@ -119,6 +119,7 @@ import {
   DotOutlineIcon,
   EyeIcon,
   FolderIcon,
+  CopyIcon,
   MessageIcon,
   MoreIcon,
   ForkIcon,
@@ -133,8 +134,8 @@ import {
   TerminalIcon,
   TrashIcon,
   UploadIcon,
-  CopyIcon,
 } from "./SidebarIcons";
+import { errorMessage } from "@/lib/errors";
 
 interface FileManagerAvailability {
   supported: boolean;
@@ -283,6 +284,9 @@ export interface SessionSidebarControl {
   refreshWorktrees(): void;
   /** Creates a worktree of `project` and lists it at once; the caller starts the session in it. */
   createWorktree(project: ProjectChoice, branch: string): Promise<{ path: string } | { error: string }>;
+  /** Opens a listed session as picking it from the list does (a side chat as
+   *  its parent's tab, as a search hit opens it); false when it is not listed. */
+  openSession(sessionId: string): boolean;
 }
 
 type WorktreeEntry = WorktreeChoice;
@@ -332,6 +336,8 @@ type ArchiveDeleteScope = "all" | "old";
 const LAST_CUSTOM_CWD_STORAGE_KEY = "pi-web:last-custom-cwd";
 const RUNNING_SESSIONS_POLL_MS = 2500;
 const SESSION_DETAILS_HYDRATION_DELAY_MS = 750;
+// How long the running poll leaves an unknown list version to the first summary (a cold disk).
+const INITIAL_SUMMARY_WAIT_MS = 15_000;
 /** "Archive sessions older than 7 days" in a project's menu. */
 const ARCHIVE_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
 /** The archive bar's "Delete archived over 30 days ago", by archive time. */
@@ -532,6 +538,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   // decide whether the list needs reloading, and no render reads it.
   const sessionListVersionRef = useRef<number | null>(null);
   const sessionLoadIdRef = useRef(0);
+  // While the first summary list is in flight, the running poll must not take the
+  // unknown list version for an invalidation and supersede it with a full scan.
+  // Bounded: a summary request that stalls (a dropped phone connection) must not
+  // keep the poll from loading the list forever.
+  const initialSummaryStartedAtRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(true);
   // The first paint lists summary rows (their time is the file's mtime); the
   // project order is first saved from the full details.
@@ -848,7 +859,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     forgetRetiredSidebarKeys();
   }, []);
 
-  const loadSessions = useCallback(async (showLoading = false, force = false, summary = false) => {
+  const loadSessions = useCallback(async (showLoading = false, force = false, summary = false): Promise<boolean> => {
     const loadId = ++sessionLoadIdRef.current;
     try {
       if (showLoading) setLoading(true);
@@ -863,10 +874,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         awaitingInputSessionIds?: string[];
         completionNotificationSuppressedSessionIds?: string[];
       };
-      if (loadId !== sessionLoadIdRef.current) return;
+      if (loadId !== sessionLoadIdRef.current) return false;
       sessionListVersionRef.current = data.sessionListVersion;
       setAllSessions(data.sessions);
-      if (!summary) setSessionDetailsLoaded(true);
+      // A summary row whose file changed since the last scan is the only one
+      // without its details; the others were checked against their file's stat.
+      const needsDetails = data.sessions.some((session) => session.detailsPending === true);
+      if (!summary || !needsDetails) setSessionDetailsLoaded(true);
       // Treat the fetched running set as an initial fallback only. Once the
       // lightweight poll is live, a slow session-list fetch cannot overwrite it.
       if (!runningPollAuthoritativeRef.current) {
@@ -891,8 +905,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         return next.size === prev.size ? prev : next;
       });
       setError(null);
+      return needsDetails;
     } catch (e) {
       if (loadId === sessionLoadIdRef.current) setError(String(e));
+      return false;
     } finally {
       if (loadId === sessionLoadIdRef.current) setLoading(false);
     }
@@ -907,9 +923,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     if (isFirst) {
       // Header/stat metadata is enough to select the URL session and paint the
       // sidebar. Hydrate exact counts, names, and first messages once the
-      // selected chat has had a chance to start loading.
-      void loadSessions(true, false, true).then(() => {
-        if (!active) return;
+      // selected chat has had a chance to start loading, and only when the
+      // summary has rows a full scan still owes.
+      initialSummaryStartedAtRef.current = Date.now();
+      void loadSessions(true, false, true).then((needsDetails) => {
+        initialSummaryStartedAtRef.current = null;
+        if (!active || !needsDetails) return;
         detailsHydrationTimerRef.current = setTimeout(() => {
           detailsHydrationTimerRef.current = null;
           if (active) void loadSessions(false, true);
@@ -966,7 +985,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       const data = await res.json().catch(() => ({})) as { error?: string };
       setFileManagerError(data.error ?? `HTTP ${res.status}`);
     } catch (error) {
-      setFileManagerError(error instanceof Error ? error.message : String(error));
+      setFileManagerError(errorMessage(error));
     }
     return true;
   }, [selectedCwd, selectedCwdProp]);
@@ -1062,7 +1081,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         setSubagentsActiveSessionIds((previous) => sameIdsOr(previous, data.subagentsActiveSessionIds ?? []));
         // Pins and archive changed in another window: reload them.
         noteUiRevision(data.sessionUiStateRevision);
-        if (data.sessionListVersion !== sessionListVersionRef.current) {
+        // The first summary may still be in flight (a cold disk): its version is
+        // unknown, not stale, so a full scan must not supersede it.
+        const summaryStartedAt = initialSummaryStartedAtRef.current;
+        const summaryInFlight = summaryStartedAt !== null && Date.now() - summaryStartedAt < INITIAL_SUMMARY_WAIT_MS;
+        if (!summaryInFlight && data.sessionListVersion !== sessionListVersionRef.current) {
           // Reuse the invalidated cache; forcing a scan would change the version again.
           await loadSessions();
         }
@@ -1375,7 +1398,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       });
       setSelectedCwd(data.cwd);
     } catch (e) {
-      setCustomPathError(e instanceof Error ? e.message : String(e));
+      setCustomPathError(errorMessage(e));
     } finally {
       setCustomPathValidating(false);
     }
@@ -1425,7 +1448,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       setWtRefreshKey((k) => k + 1);
       return { path };
     } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
+      return { error: errorMessage(e) };
     }
   }, [t]);
 
@@ -1447,7 +1470,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       setWtRefreshKey((k) => k + 1);
       return "removed";
     } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
+      return { error: errorMessage(e) };
     }
   }, [currentWorktreePath]);
 
@@ -1485,8 +1508,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const startNewSessionInRef = useRef(startNewSessionIn);
   startNewSessionInRef.current = startNewSessionIn;
 
+  const openSessionRef = useRef<(sessionId: string) => boolean>(() => false);
+  openSessionRef.current = (sessionId) => {
+    const session = allSessions.find((item) => item.id === sessionId);
+    if (!session) return false;
+    if (session.relation?.kind === "side" && session.id !== selectedSessionId) onSelectSideChat(session);
+    else handleSelectSessionFromList(session);
+    return true;
+  };
+
   useImperativeHandle(controlRef, () => ({
     startNewSessionIn: (target) => startNewSessionInRef.current(target),
+    openSession: (sessionId) => openSessionRef.current(sessionId),
     openFolderForNewSession: (onPicked, returnFocusTo) => {
       folderPickRef.current = onPicked;
       folderReturnFocusRef.current = returnFocusTo;
@@ -2206,7 +2239,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       openForkedRef.current(forked, row.key);
       showToast(message, [], tail);
     } catch (error) {
-      showToast(t("sidebar.forkFailed", { error: error instanceof Error ? error.message : String(error) }));
+      showToast(t("sidebar.forkFailed", { error: errorMessage(error) }));
     } finally {
       forkingIdsRef.current.delete(source.id);
     }
@@ -2226,8 +2259,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
 
   // Copy the session's file path (the row menu's copy action): the .jsonl file
   // another agent (Codex, a script) can read, exactly as it sits on disk. The
-  // toast says whether the clipboard took it; a refused copy names the
-  // failure. Nothing is shared or uploaded: the clipboard is the whole journey.
+  // toast says whether the clipboard took it; a refused copy names the failure.
+  // Nothing is shared or uploaded: the clipboard is the whole journey.
   const copySessionPath = useCallback((family: SessionFamily) => {
     if (family.root.transient) return;
     copyText(family.root.path).then(
@@ -2239,9 +2272,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const runSessionAction = (id: SessionMenuActionId, row: SessionRow, shiftKey: boolean) => {
     const { family } = row;
     switch (id) {
-      case "copy-session-path": copySessionPath(family); break;
       case "open-new-tab": openFamilyInNewTab(family); break;
       case "insert-into-chat": onInsertSessionReference?.(family.root); break;
+      case "copy-session-path": copySessionPath(family); break;
       case "pin": setFamilyPinned(family, true); break;
       case "unpin": setFamilyPinned(family, false); break;
       case "rename": startRename(family); break;

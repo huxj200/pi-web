@@ -8,7 +8,7 @@ import { normalizeCustomPanelLines, stripAnsi } from "@/lib/ansi";
 import { splitNoticeLinks, splitNoticeText } from "@/lib/notice-text";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, getTurnAnchors, hasAssistantAnswer, hasTurnRef, isHiddenCustomMessage, splitFinalAssistantBlocks, liveOutputPreview, LIVE_OUTPUT_PREVIEW_LINES } from "@/lib/message-display";
+import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, getTurnAnchors, hasAssistantAnswer, hasTurnRef, isHiddenCustomMessage, splitFinalAssistantBlocks, liveOutputPreview, LIVE_OUTPUT_PREVIEW_LINES, sumCost } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { getFinalAnswerViews, keepWrittenFiles, type FinalAnswerViews } from "@/lib/turn-views";
 import { formatTurnDuration, getTurnDurationMs } from "@/lib/turn-duration";
@@ -50,6 +50,7 @@ import {
   restoreScrollTop,
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
+import { errorMessage } from "@/lib/errors";
 
 interface Props {
   session: SessionInfo | null;
@@ -206,7 +207,7 @@ function getUserInputText(message: AgentMessage): string | null {
   return text.length > 0 ? text : null;
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMisses, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; durationMs?: number; cacheMisses?: CacheMissSummary; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
+function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cost, cacheMisses, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; durationMs?: number; cost?: number; cacheMisses?: CacheMissSummary; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useLayoutEffect(() => {
     if (reveal) setExpanded(true);
@@ -215,6 +216,8 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   const parts = [`${messageCount} ${t(messageCount === 1 ? "chat.message" : "chat.messages")}`];
   if (toolCallCount > 0) parts.push(`${toolCallCount} ${t(toolCallCount === 1 ? "chat.toolCall" : "chat.toolCalls")}`);
   if (durationMs !== undefined) parts.push(t("chat.turnDuration", { time: formatTurnDuration(durationMs) }));
+  // Folded, the cost of the steps inside is added up here (#1768); open, each shows under its step.
+  if (cost !== undefined && !(expanded || reveal)) parts.push(`$${cost.toFixed(4)}`);
   // Folded, the cache misses inside are added up here (#1265); open, each shows under its step.
   const cacheMissText = cacheMisses && !(expanded || reveal) ? cacheMissSummaryText(t, cacheMisses) : undefined;
 
@@ -293,7 +296,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    loading, error, messages, activeToolResults, toolClocks, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
+    loading, error, messages, activeToolResults, toolClocks, entryIds, messageKeys, liveUserEntryIds, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, missingCwd, canForkMissingCwd, modelScopeWarnings, isModelScopeActive, allModelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -361,7 +364,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     try {
       refusal = await startSideChat(message);
     } catch (error) {
-      refusal = error instanceof Error ? error.message : String(error);
+      refusal = errorMessage(error);
     }
     if (!refusal) return;
     chatInputRef?.current?.restoreSubmission(message);
@@ -697,7 +700,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         addNotice({ type: "error", message: t("chat.dropFailed", { message: `${failure.name}: ${failure.error}` }) });
       }
     } catch (uploadError) {
-      addNotice({ type: "error", message: t("chat.dropFailed", { message: uploadError instanceof Error ? uploadError.message : String(uploadError) }) });
+      addNotice({ type: "error", message: t("chat.dropFailed", { message: errorMessage(uploadError) }) });
     }
   }, [addNotice, chatInputRef, newSessionCwd, onFilesUploaded, session?.cwd, t]);
 
@@ -983,24 +986,27 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         </div>
       )}
 
-      <div
-        style={{
-          position: "absolute",
-          top: 12,
-          left: 0,
-          right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
-          zIndex: 40,
-          display: "flex",
-          // Toasts live in the top-right corner
-          justifyContent: "flex-end",
-          padding: `0 ${CHAT_COLUMN_PADDING}px`,
-          pointerEvents: "none",
-        }}
-      >
-        <NoticeShelf notices={notices} floating onPauseChange={setNoticePaused} />
-      </div>
-
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {/* Inside the transcript's box, not the whole column: the shelf ends
+            above the composer and scrolls there instead of covering it (#1780). */}
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            bottom: 12,
+            left: 0,
+            right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
+            zIndex: 40,
+            display: "flex",
+            // Toasts live in the top-right corner
+            justifyContent: "flex-end",
+            alignItems: "flex-start",
+            padding: `0 ${CHAT_COLUMN_PADDING}px`,
+            pointerEvents: "none",
+          }}
+        >
+          <NoticeShelf notices={notices} floating onPauseChange={setNoticePaused} />
+        </div>
         {extensionDialog && (
           <ExtensionDialog key={extensionDialog.id} request={extensionDialog} waitingCount={waitingExtensionDialogCount} onRespond={respondToExtensionUi} />
         )}
@@ -1070,6 +1076,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                 }
                 if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
+                // A prompt sent during the run: its entry id, for New session only (#1746).
+                const liveEntryId = entryIds[idx] === undefined ? liveUserEntryIds.get(messages[idx]) : undefined;
                 const view = (
                   <MessageView
                     key={`${keyPrefix}-view-${messageKey}`}
@@ -1083,7 +1091,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     entryId={entryIds[idx]}
                     searchBlock={entryIds[idx] === pendingSearchScroll?.entryId ? searchBlock : undefined}
                     onFork={bashRunning || isNew ? undefined : forkFromMessage}
-                    forking={forkingEntryId === entryIds[idx]}
+                    forkEntryId={liveEntryId}
+                    forking={forkingEntryId === (entryIds[idx] ?? liveEntryId)}
                     onEditContent={sessionBusy ? undefined : handleEditContent}
                     onCancelEdit={cancelEdit}
                     isEditing={editEntryId === entryIds[idx]}
@@ -1198,7 +1207,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (processMessageCount === 0) rendered.push(...processViews);
                 else if (processViews.length > 0) {
                   const answered = collapsesProcessDetails(finalAnswerMessage);
-                  const processCacheMisses = summarizeCacheMisses(messages.slice(userIdx + 1, finalAnswerMessage ? finalAssistantIdx : finalAssistantIdx + 1));
+                  // The steps inside the fold: the final message's own notices and usage go under its answer.
+                  const foldedMessages = messages.slice(userIdx + 1, finalAnswerMessage ? finalAssistantIdx : finalAssistantIdx + 1);
                   rendered.push(
                     <div
                       key={`process-group-${messageKeys[groupStartIdx]}`}
@@ -1209,7 +1219,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                           would otherwise stay open once its answer shows up, e.g. when
                           switching between an answered and an unanswered leaf of the same
                           turn. Manual toggles survive every other re-render. */}
-                      <ProcessDetailsGroup key={answered ? "answered" : "unanswered"} messageCount={processMessageCount} toolCallCount={processToolCount} durationMs={turnDurationMs} cacheMisses={processCacheMisses} defaultExpanded={!answered} reveal={revealProcess} t={t}>
+                      <ProcessDetailsGroup key={answered ? "answered" : "unanswered"} messageCount={processMessageCount} toolCallCount={processToolCount} durationMs={turnDurationMs} cost={sumCost(foldedMessages)} cacheMisses={summarizeCacheMisses(foldedMessages)} defaultExpanded={!answered} reveal={revealProcess} t={t}>
                         {processViews}
                       </ProcessDetailsGroup>
                     </div>,
@@ -1251,7 +1261,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                        {t("chat.loadEarlier")}
                     </div>
                   )}
-                  <div ref={attachTranscriptRows}>{rendered.slice(startIndex)}</div>
+                  <div ref={attachTranscriptRows} className="transcript-rows">{rendered.slice(startIndex)}</div>
                 </>
               );
             })()}
@@ -1409,7 +1419,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 function SideChatDivider() {
   const { t } = useI18n();
   return (
-    <div role="separator" className="my-4 flex items-center gap-3 text-xs" style={{ color: "var(--text-dim)" }}>
+    // Bottom margin only: the row above keeps its own gap (useSkipOffscreenRows).
+    <div role="separator" className="mb-4 flex items-center gap-3 text-xs" style={{ color: "var(--text-dim)" }}>
       <span className="h-px flex-1" style={{ background: "var(--border)" }} />
       <span>{t("sideChat.divider")}</span>
       <span className="h-px flex-1" style={{ background: "var(--border)" }} />
@@ -1456,6 +1467,19 @@ function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: No
         // Right-anchored: every toast's right edge aligns here, widths extend leftward
         alignItems: "flex-end",
         marginBottom: floating ? 0 : 10,
+        // Never taller than the box it floats in, the transcript's above the
+        // composer: a stack that does not fit scrolls there (#1780). The scroll
+        // box clips, so its padding keeps the cards' shadows inside it.
+        ...(floating ? {
+          maxHeight: "100%",
+          overflowY: "auto",
+          overscrollBehavior: "contain",
+          scrollbarWidth: "thin",
+          padding: "4px 12px 24px",
+          marginTop: -4,
+          marginLeft: -12,
+          marginRight: -12,
+        } as const : {}),
       }}
     >
       {notices.map((notice, index) => {
@@ -1492,6 +1516,8 @@ function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: No
               // so the toast itself must opt back into interactivity or hover events never reach it
               pointerEvents: "auto",
               marginBottom: index === notices.length - 1 ? 0 : 6,
+              // Each card keeps its height; the shelf scrolls instead of squeezing them
+              flexShrink: 0,
               overflow: "hidden",
               borderRadius: 14,
               border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",

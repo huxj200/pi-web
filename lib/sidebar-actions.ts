@@ -8,15 +8,17 @@
  * only adds a chip to the open composer (nothing is written), so it is offered
  * everywhere a saved session is, beside Open in new tab; copying a session's
  * file path only copies, never changes the session, so that one sits there too.
- * Open in new tab only navigates (a browser tab loads the session's link): it
- * is offered everywhere a saved session is, after the actions that manage the
- * session and before Delete. Never first: a menu's first item takes focus when
- * it opens, so Enter right after opening would leave the tab. Also the requests
- * behind a project group's "Delete all sessions", with `fetch` passed in.
+ * Open in new tab only
+ * navigates (a browser tab loads the session's link): it is offered everywhere
+ * a saved session is, after the actions that manage the session and before
+ * Delete. Never first: a menu's first item takes focus when it opens, so Enter
+ * right after opening would leave the tab. Also the requests behind a project
+ * group's "Delete all sessions", with `fetch` passed in.
  */
 
 import { projectNameOf, type SidebarFamilyStatus, type SidebarProject, type SidebarRow } from "./session-tree";
 import type { SessionUiStateRequest } from "./session-ui-state-shared";
+import { errorMessage } from "./errors";
 
 export type SessionMenuActionId =
   | "open-new-tab"
@@ -33,7 +35,7 @@ export type SessionMenuActionId =
   | "delete";
 
 export type SessionMenuEntry =
-  | { kind: "action"; id: SessionMenuActionId; shortcut?: string; disabledReason?: "running" }
+  | { kind: "action"; id: SessionMenuActionId; shortcut: string; disabledReason?: "running" }
   | { kind: "separator" };
 
 /**
@@ -55,7 +57,7 @@ export function sessionMenuEntries(
       { kind: "action", id: "rename", shortcut: "R" },
       { kind: "action", id: "fork", shortcut: "F" },
       { kind: "action", id: "insert-into-chat", shortcut: "I" },
-      { kind: "action", id: "copy-session-path" },
+      { kind: "action", id: "copy-session-path", shortcut: "C" },
       openNewTab,
       { kind: "separator" },
       { kind: "action", id: "delete", shortcut: "D" },
@@ -71,7 +73,7 @@ export function sessionMenuEntries(
       ? { kind: "action", id: "archive", shortcut: "A", disabledReason: "running" }
       : { kind: "action", id: "archive", shortcut: "A" },
     { kind: "action", id: "insert-into-chat", shortcut: "I" },
-    { kind: "action", id: "copy-session-path" },
+    { kind: "action", id: "copy-session-path", shortcut: "C" },
     openNewTab,
     { kind: "separator" },
     { kind: "action", id: "delete", shortcut: "D" },
@@ -181,7 +183,7 @@ export async function deleteProjectSessions(
       outcome.deletedRoots.push(...part.filter((id) => deleted.has(id)));
       outcome.running.push(...(data.running ?? []));
     } catch (error) {
-      outcome.error = error instanceof Error ? error.message : String(error);
+      outcome.error = errorMessage(error);
       break;
     }
   }

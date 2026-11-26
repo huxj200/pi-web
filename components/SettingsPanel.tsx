@@ -38,6 +38,9 @@ import { PluginsConfig } from "./PluginsConfig";
 import { McpConfig } from "./McpConfig";
 import { ConfigButton, ConfigDetailNavigationContext, ConfigSwitch, type ConfigDetailNavigation } from "./SettingsUi";
 import { FontSettings } from "./FontSettings";
+import { HttpProxyForm } from "./HttpProxyForm";
+import { readJsonOrThrow } from "@/lib/fetch-json";
+import { errorMessage } from "@/lib/errors";
 
 interface Props {
   cwd: string | null;
@@ -79,6 +82,17 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
   return <svg {...common}><path d="M9 7V2M15 7V2M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0ZM12 19v3" /></svg>;
 }
 
+type QueueMode = "one-at-a-time" | "all";
+type QueueModes = { steeringMode: QueueMode; followUpMode: QueueMode };
+const QUEUE_MODE_SETTINGS = [
+  ["steeringMode", "settings.steeringMode"],
+  ["followUpMode", "settings.followUpMode"],
+] as const;
+const QUEUE_MODES = [
+  ["one-at-a-time", "settings.queueModeOneAtATime"],
+  ["all", "settings.queueModeAll"],
+] as const;
+
 function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
@@ -94,6 +108,9 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   const [cacheMissNotices, setCacheMissNotices] = useState<boolean | null>(null);
   const [cacheMissNoticesSaving, setCacheMissNoticesSaving] = useState(false);
   const [cacheMissNoticesError, setCacheMissNoticesError] = useState<string | null>(null);
+  const [queueModes, setQueueModes] = useState<QueueModes | null>(null);
+  const [queueModesSaving, setQueueModesSaving] = useState(false);
+  const [queueModesError, setQueueModesError] = useState<string | null>(null);
   const [pushRegistering, setPushRegistering] = useState(false);
   const [pushStatus, setPushStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null);
   const [webAuthEnabled, setWebAuthEnabled] = useState(false);
@@ -128,12 +145,11 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
     let cancelled = false;
     void fetch("/api/tools/settings")
       .then(async (response) => {
-        const data = await response.json() as ToolSettingsResponse & { error?: string };
-        if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+        const data = await readJsonOrThrow<ToolSettingsResponse>(response);
         if (!cancelled) setShellSettings(data);
       })
       .catch((cause) => {
-        if (!cancelled) setShellError(cause instanceof Error ? cause.message : String(cause));
+        if (!cancelled) setShellError(errorMessage(cause));
       });
     return () => { cancelled = true; };
   }, []);
@@ -142,15 +158,45 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
     let cancelled = false;
     void fetch("/api/cache-miss-notices")
       .then(async (response) => {
-        const data = await response.json() as { enabled?: boolean; error?: string };
-        if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+        const data = await readJsonOrThrow<{ enabled?: boolean }>(response);
         if (!cancelled) setCacheMissNotices(data.enabled === true);
       })
       .catch((cause) => {
-        if (!cancelled) setCacheMissNoticesError(cause instanceof Error ? cause.message : String(cause));
+        if (!cancelled) setCacheMissNoticesError(errorMessage(cause));
       });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/queue-modes")
+      .then(async (response) => {
+        const data = await readJsonOrThrow<QueueModes>(response);
+        if (!cancelled) setQueueModes(data);
+      })
+      .catch((cause) => {
+        if (!cancelled) setQueueModesError(errorMessage(cause));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // pi's steeringMode (#1771) and followUpMode; the server applies them to the open sessions too.
+  const chooseQueueMode = async (key: keyof QueueModes, mode: QueueMode) => {
+    setQueueModesSaving(true);
+    setQueueModesError(null);
+    try {
+      const response = await fetch("/api/queue-modes", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: mode }),
+      });
+      setQueueModes(await readJsonOrThrow<QueueModes>(response));
+    } catch (cause) {
+      setQueueModesError(errorMessage(cause));
+    } finally {
+      setQueueModesSaving(false);
+    }
+  };
 
   // pi's showCacheMissNotices (#1265); the open chat is read again to show or drop them.
   const toggleCacheMissNotices = async (enabled: boolean) => {
@@ -162,12 +208,11 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
-      const data = await response.json() as { enabled?: boolean; error?: string };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+      const data = await readJsonOrThrow<{ enabled?: boolean }>(response);
       setCacheMissNotices(data.enabled === true);
       if (sessionId) onSessionReloaded();
     } catch (cause) {
-      setCacheMissNoticesError(cause instanceof Error ? cause.message : String(cause));
+      setCacheMissNoticesError(errorMessage(cause));
     } finally {
       setCacheMissNoticesSaving(false);
     }
@@ -182,15 +227,14 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
-      const data = await response.json() as ToolSettingsResponse & { error?: string };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+      const data = await readJsonOrThrow<ToolSettingsResponse>(response);
       setShellSettings(data);
       if (sessionId) {
         await sendAgentCommand(sessionId, { type: "reload" });
         onSessionReloaded();
       }
     } catch (cause) {
-      setShellError(cause instanceof Error ? cause.message : String(cause));
+      setShellError(errorMessage(cause));
     } finally {
       setShellSaving(false);
     }
@@ -208,11 +252,10 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ builtinTools }),
       });
-      const data = await response.json() as ToolSettingsResponse & { error?: string };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
+      const data = await readJsonOrThrow<ToolSettingsResponse>(response);
       setShellSettings(data);
     } catch (cause) {
-      setBuiltinToolsError(cause instanceof Error ? cause.message : String(cause));
+      setBuiltinToolsError(errorMessage(cause));
     } finally {
       setBuiltinToolsSaving(false);
     }
@@ -234,7 +277,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       if (!ok) throw new Error("unsupported or not permitted");
       setPushStatus({ kind: "ok", message: t("settings.pushRegistered") });
     } catch (cause) {
-      setPushStatus({ kind: "error", message: `${t("settings.pushRegisterFailed")} ${cause instanceof Error ? cause.message : String(cause)}` });
+      setPushStatus({ kind: "error", message: `${t("settings.pushRegisterFailed")} ${errorMessage(cause)}` });
     } finally {
       setPushRegistering(false);
     }
@@ -397,6 +440,27 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
               </label>
             </div>
           </div>
+          {QUEUE_MODE_SETTINGS.map(([key, heading]) => (
+            <div key={key} className="settings-chat-option settings-chat-switch-option" role="radiogroup" aria-label={t(heading)}>
+              <span>{t(heading)}</span>
+              <div className="settings-send-mode-options">
+                {QUEUE_MODES.map(([mode, label]) => (
+                  <label key={mode} className="settings-send-mode-option">
+                    <input
+                      type="radio"
+                      name={key}
+                      value={mode}
+                      checked={queueModes?.[key] === mode}
+                      disabled={queueModes === null || queueModesSaving}
+                      onChange={() => void chooseQueueMode(key, mode)}
+                      className="sr-only"
+                    />
+                    <span className="settings-send-mode-label">{t(label)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
           <div className="settings-chat-option settings-chat-switch-option">
             <span>{t("settings.cacheMissNotices")}</span>
             <ConfigSwitch
@@ -410,6 +474,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
         </div>
         <p id="settings-cache-miss-notices-description" className="settings-general-description">{t("settings.cacheMissNoticesDescription")}</p>
         {cacheMissNoticesError && <p role="alert" className="settings-general-error">{cacheMissNoticesError}</p>}
+        {queueModesError && <p role="alert" className="settings-general-error">{queueModesError}</p>}
       </section>
 
       <section className="settings-general-section">
@@ -489,6 +554,10 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           {shellError && <p role="alert" className="settings-general-error">{shellError}</p>}
         </section>
       )}
+
+      <section className="settings-general-section">
+        <HttpProxyForm label={t("settings.httpProxy")} />
+      </section>
 
       <section className="settings-general-section">
         <h3 className="settings-general-heading">{t("settings.pushPermission")}</h3>

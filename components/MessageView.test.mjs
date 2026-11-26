@@ -20,6 +20,7 @@ const {
   getModelDisplayName,
   getTokenEstimateText,
   getToolCallInputText,
+  readImageUnsupportedModel,
   replaceUserMessageText,
 } = await jiti.import("./MessageView.tsx");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
@@ -57,6 +58,17 @@ test("on a narrow phone a message's actions drop their labels and keep their tit
   }
   const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(css, /@media \(max-width: 380px\) \{\s*\.message-action-label \{\s*display: none;\s*\}\s*\}/);
+});
+
+test("a prompt sent during the run offers New session from the entry the wrapper named, not Edit (#1746)", () => {
+  const props = { forkEntryId: "live-entry", onFork: () => {}, onEditContent: () => {} };
+  const html = renderMessage({ role: "user", content: "Hi", timestamp: 1 }, props);
+  assert.ok(html.includes('title="New session — creates an independent copy from here"'));
+  assert.ok(!html.includes('title="Edit from here — branches within this session"'));
+  const without = renderMessage({ role: "user", content: "Hi", timestamp: 1 }, { onFork: () => {} });
+  assert.ok(!without.includes('title="New session — creates an independent copy from here"'));
+  const message = { role: "user", content: "Hi", timestamp: 1 };
+  assert.equal(MessageView.compare({ message, onFork: props.onFork }, { message, ...props, onEditContent: undefined }), false);
 });
 
 test("streaming headers preserve counts and speed without showing empty metrics", () => {
@@ -116,6 +128,32 @@ test("previews the first thinking line and reveals the full text with the saved 
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test("a reply's terminal escape sequences are not shown as text (#1753)", () => {
+  const previousWindow = globalThis.window;
+  try {
+    for (const expanded of [false, true]) {
+      globalThis.window = { localStorage: { getItem: () => String(expanded) } };
+      const html = renderToStaticMarkup(React.createElement(
+        I18nProvider,
+        null,
+        React.createElement(ThinkingBlock, {
+          block: { type: "thinking", thinking: "\x1b[38;5;5mThinking:\x1b[39m \x1b[39m\x1b[2mInteresting: a plan\nSecond\x1b[22m line" },
+          blockIndex: 0,
+        }),
+      ));
+      assert.doesNotMatch(html, /\x1b|\[\d+(?:;\d+)*m/);
+      assert.match(html, /Thinking: Interesting: a plan/);
+      assert.equal(html.includes("Second line"), expanded);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+  const answer = renderMessage({ role: "assistant", content: [{ type: "text", text: "\x1b[1mDone\x1b[0m: **ok**" }] });
+  assert.doesNotMatch(answer, /\x1b|\[\d+m/);
+  assert.match(answer, /Done: <strong>ok<\/strong>/);
 });
 
 test("renders long expanded thinking in pieces and short thinking as one text node (#1196)", () => {
@@ -1253,4 +1291,38 @@ test("one column names a deleted file's section by its old path", () => {
 
   assert.ok(html.includes(">a/gone.ts<"));
   assert.ok(!html.includes("/dev/null"));
+});
+
+test("a read image the model saw as a placeholder says so under the card, collapsed or not", (t) => {
+  const block = { type: "toolCall", toolCallId: "read-image-unsupported", toolName: "read", input: { path: "red.png" } };
+  t.after(() => setToolCallExpanded(block.toolCallId, false));
+  const message = { role: "assistant", provider: "fake", model: "text-only", content: [block] };
+  // What pi 1.6's read tool returns for a model without image input.
+  const result = {
+    role: "toolResult",
+    toolCallId: block.toolCallId,
+    toolName: "read",
+    content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
+    details: { imageUnsupportedByModel: "text-only" },
+    isError: false,
+  };
+  const notice = "[text-only does not support images; it saw a placeholder instead]";
+  for (const expanded of [false, true]) {
+    setToolCallExpanded(block.toolCallId, expanded);
+    const html = renderMessage(message, { toolResults: new Map([[block.toolCallId, result]]) });
+    assert.ok(textOf(html).includes(notice), expanded ? "expanded" : "collapsed");
+    assert.match(html, /<img/, "the image still shows");
+  }
+
+  setToolCallExpanded(block.toolCallId, true);
+  const seen = renderMessage(message, { toolResults: new Map([[block.toolCallId, { ...result, details: undefined }]]) });
+  assert.ok(!textOf(seen).includes("does not support images"), "a vision model's read has no notice");
+});
+
+test("readImageUnsupportedModel reads only a read result's model name", () => {
+  assert.equal(readImageUnsupportedModel("read", { imageUnsupportedByModel: "m" }), "m");
+  assert.equal(readImageUnsupportedModel("bash", { imageUnsupportedByModel: "m" }), null);
+  assert.equal(readImageUnsupportedModel("read", { imageUnsupportedByModel: "" }), null);
+  assert.equal(readImageUnsupportedModel("read", { imageUnsupportedByModel: 3 }), null);
+  assert.equal(readImageUnsupportedModel("read", undefined), null);
 });
