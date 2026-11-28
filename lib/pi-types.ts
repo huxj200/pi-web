@@ -15,6 +15,7 @@ export interface BashResultLike {
   cancelled?: boolean;
   truncated?: boolean;
   fullOutputPath?: string;
+  fullOutputError?: string;
 }
 
 export interface ContextUsage {
@@ -90,6 +91,9 @@ interface ResourceLoaderLike {
 }
 
 interface ExtensionRunnerLike {
+  getCommand(name: string): {
+    getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null | Promise<Array<{ value: string; label: string; description?: string }> | null>;
+  } | undefined;
   getRegisteredCommands(): Array<{
     invocationName: string;
     description?: string;

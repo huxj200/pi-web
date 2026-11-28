@@ -27,6 +27,10 @@ import {
   PINNED_MORE_KEY,
   showLessFamilies,
   showMoreFamilies,
+  startOfLocalDay,
+  type RecentListInput,
+  type RecentSection,
+  type SidebarListMode,
   type SidebarProject,
   type SidebarRow,
 } from "@/lib/session-tree";
@@ -35,15 +39,19 @@ import {
   loadArchiveCollapsed,
   loadFilesCollapsed,
   loadGroupExpansion,
+  loadListMode,
   loadNonGitCwds,
   loadPinnedCollapsed,
+  loadRecentCollapsed,
   loadShowIgnoredFiles,
   loadSidebarTab,
   rememberCwdGitStatus,
   saveArchiveCollapsed,
   saveFilesCollapsed,
   saveGroupExpansion,
+  saveListMode,
   savePinnedCollapsed,
+  saveRecentCollapsed,
   saveShowIgnoredFiles,
   saveSidebarTab,
   type SidebarTab,
@@ -95,30 +103,33 @@ import {
 import { isPageAttended, subscribePageAttention } from "@/lib/user-attention";
 import { useFilesPlacement } from "@/hooks/useFilesPlacement";
 import { useI18n } from "@/hooks/useI18n";
-import { useIsMobile } from "@/hooks/useIsMobile";
+import { useIsMobile, useTouchRows } from "@/hooks/useIsMobile";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
 import { useSessionUiState } from "@/hooks/useSessionUiState";
 import { archiveViewState, filesFoldState, useSidebarMotion } from "@/hooks/useSidebarMotion";
 import { DirectoryPicker } from "./DirectoryPicker";
-import { DismissButton } from "./DismissButton";
-import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
+import { FileExplorer, type FileExplorerHandle, type FileExplorerToast } from "./FileExplorer";
 import { PiWebTitle } from "./PiWebTitle";
 import { ProjectWorktreePicker, type ProjectWorktreePickerHandle, type WorktreeRemoval } from "./ProjectWorktreePicker";
 import { SessionSearch } from "./SessionSearch";
 import { SessionTree, sessionRowTitle, type SessionTreeReveal } from "./SessionTree";
 import { copyText } from "@/lib/clipboard";
-import { SidebarMenu, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
+import { SidebarMenu, SidebarMenuQuestion, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
 import { SidebarToast, type SidebarToastAction, type SidebarToastData } from "./SidebarToast";
 import {
   ArchiveIcon,
   ChangesIcon,
   CheckIcon,
   ChevronIcon,
+  ClockIcon,
   DotIcon,
   DotOutlineIcon,
   EyeIcon,
   FolderIcon,
+  FolderOpenIcon,
+  FolderPlusIcon,
+  FileIcon,
   CopyIcon,
   MessageIcon,
   MoreIcon,
@@ -169,6 +180,7 @@ function ToolbarIconButton({
   pressed,
   expanded,
   controls,
+  menu,
   done,
   className,
   children,
@@ -183,6 +195,8 @@ function ToolbarIconButton({
   expanded?: boolean;
   /** The id of what it opens. */
   controls?: string;
+  /** It opens a menu (the Upload key's files or folder): `expanded` says whether it is open. */
+  menu?: boolean;
   /** Brief confirmation after an action (refresh). */
   done?: boolean;
   className?: string;
@@ -199,6 +213,7 @@ function ToolbarIconButton({
       aria-pressed={pressed}
       aria-expanded={expanded}
       aria-controls={controls}
+      aria-haspopup={menu ? "menu" : undefined}
       className={`sidebar-tool-button${pressed || expanded ? " is-active" : ""}${done ? " is-done" : ""}${className ? ` ${className}` : ""}`}
     >
       {children}
@@ -245,11 +260,14 @@ interface Props {
     projectKey?: string | null,
   ) => void;
   onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" }) => void;
+  /** The explorer moved or renamed an entry (lexical paths, as tabs hold them). */
+  onFileEntryMoved?: (from: string, to: string) => void;
+  onFileEntryDeleted?: (path: string) => void;
   onOpenTerminal?: (cwd: string) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
-  onAtMentions?: (relativePaths: string[]) => void;
+  onAtMentions?: (entries: Array<{ path: string; isDir: boolean }>) => void;
   /** Fired when sessions that are not currently selected finish running.
    *  Lets the app play a cross-workspace completion tone. `since`: no earlier
    *  than the poll that last saw them running (a chime claim's bound, #1688). */
@@ -328,7 +346,9 @@ type SidebarMenuState =
   | { kind: "row"; row: SessionRow; anchor: SidebarMenuAnchor; opener: HTMLElement | null }
   | { kind: "group"; project: SidebarProject; olderCount: number; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: boolean }
   | { kind: "archive-group"; project: SidebarProject; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: boolean }
-  | { kind: "archive"; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: ArchiveDeleteScope };
+  | { kind: "archive"; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: ArchiveDeleteScope }
+  /** The files' Upload key: files, or a folder with its subfolders. */
+  | { kind: "upload"; anchor: SidebarMenuAnchor; opener: HTMLElement };
 
 /** The archive bar's deletes: every archived session, or those archived over 30 days ago. */
 type ArchiveDeleteScope = "all" | "old";
@@ -524,15 +544,47 @@ function useHeaderFit(ref: RefObject<HTMLElement | null>, labels: string): () =>
   return fit;
 }
 
+/**
+ * The start of the viewer's local day (lib/session-tree.ts
+ * startOfLocalDay()), moved on just after local midnight, and again when the
+ * page is shown: a sleeping laptop's timer may fire late or not at all.
+ */
+function useLocalDayStart(): number {
+  const [day, setDay] = useState(() => startOfLocalDay(Date.now()));
+  useEffect(() => {
+    let timer: number | undefined;
+    const update = () => {
+      const now = Date.now();
+      const start = startOfLocalDay(now);
+      setDay(start);
+      const tomorrow = new Date(start);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(update, tomorrow.getTime() - now + 1000);
+    };
+    update();
+    const onVisible = () => { if (document.visibilityState === "visible") update(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return day;
+}
+
 /** A menu placed below (or above) a button, lined up with one of its edges. */
 function buttonAnchor(element: HTMLElement, align: "start" | "end"): SidebarMenuAnchor {
   const rect = element.getBoundingClientRect();
   return { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, align };
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onInsertSessionReference, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSideChat, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onFileEntryMoved, onFileEntryDeleted, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onInsertSessionReference, onBackgroundTaskDone, hiddenFinishedSessionIds, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
+  // The session list's touch layout (tall rows, ⋯ always shown) follows a
+  // finger, not only a phone's width: the CSS row sizes' switch.
+  const touchRows = useTouchRows();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   // Tracked in a ref only: the version is compared against the polled value to
   // decide whether the list needs reloading, and no render reads it.
@@ -577,7 +629,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const [showIgnoredFiles, setShowIgnoredFiles] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
   const [fileManager, setFileManager] = useState<FileManagerAvailability | null>(null);
-  const [fileManagerError, setFileManagerError] = useState<string | null>(null);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [awaitingInputSessionIds, setAwaitingInputSessionIds] = useState<Set<string>>(() => new Set());
   // Sessions whose subagents can still report back with a run there: not done yet (#1434).
@@ -606,6 +657,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const detailsHydrationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
+  const uploadButtonRef = useRef<HTMLButtonElement>(null);
 
   // The files below the sessions (desktop, by default: both in view, a
   // separator between them, the files section foldable to its header row),
@@ -634,6 +686,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   const [keptOpenGroups, setKeptOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [moreShown, setMoreShown] = useState<Readonly<Record<string, number>>>({});
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
+  // The list by project (groups) or by date across projects, and the date
+  // sections folded there; both per browser.
+  const [listMode, setListMode] = useState<SidebarListMode>("projects");
+  const [recentCollapsed, setRecentCollapsed] = useState<readonly RecentSection[]>([]);
   // True once the mount effect below has put the browser's folds back: set
   // in the same batch, so a render that has it has them too.
   const [sidebarPrefsRestored, setSidebarPrefsRestored] = useState(false);
@@ -681,6 +737,30 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     toastIdRef.current += 1;
     setToast({ id: toastIdRef.current, message, ...(tail ? { tail } : {}), actions });
   }, []);
+  // The file explorer's notices (a move's Undo, an upload's result): the same
+  // toast, at the bottom of the files rather than the sessions. A question
+  // (Replace or Skip) waits for its answer: later notices queue behind it
+  // instead of replacing it, which would drop its upload unanswered.
+  const [fileToast, setFileToast] = useState<SidebarToastData | null>(null);
+  const fileQuestionShownRef = useRef(false);
+  const fileToastQueueRef = useRef<FileExplorerToast[]>([]);
+  const putFileToast = useCallback((next: FileExplorerToast | null) => {
+    fileQuestionShownRef.current = next?.question === true;
+    if (!next) {
+      setFileToast(null);
+      return;
+    }
+    toastIdRef.current += 1;
+    const sticky = next.sticky || next.question;
+    setFileToast({ id: toastIdRef.current, message: next.message, actions: next.actions ?? [], ...(sticky ? { sticky: true } : {}) });
+  }, []);
+  const showFileToast = useCallback((next: FileExplorerToast) => {
+    if (fileQuestionShownRef.current) fileToastQueueRef.current.push(next);
+    else putFileToast(next);
+  }, [putFileToast]);
+  const dismissFileToast = useCallback(() => {
+    putFileToast(fileToastQueueRef.current.shift() ?? null);
+  }, [putFileToast]);
   const [uiWriteFailures, setUiWriteFailures] = useState(0);
   const shownUiWriteFailuresRef = useRef(0);
   // Focus to hand to the files once they show (revealFiles): the control
@@ -851,6 +931,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     const groups = loadGroupExpansion();
     if (Object.keys(groups).length > 0) setGroupExpansion(groups);
     if (loadPinnedCollapsed()) setPinnedCollapsed(true);
+    if (loadListMode() === "recent") setListMode("recent");
+    const recentFolds = loadRecentCollapsed();
+    if (recentFolds.length > 0) setRecentCollapsed(recentFolds);
     const archiveFolds = loadArchiveCollapsed();
     if (archiveFolds.length > 0) setArchiveCollapsed(archiveFolds);
     if (loadFilesCollapsed()) setFilesCollapsed(true);
@@ -859,7 +942,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     forgetRetiredSidebarKeys();
   }, []);
 
-  const loadSessions = useCallback(async (showLoading = false, force = false, summary = false): Promise<boolean> => {
+  // `alongside` runs in the same render as the new list, when it lands: the
+  // running poll's answer, so the two never show one state each.
+  const loadSessions = useCallback(async (showLoading = false, force = false, summary = false, alongside?: () => void): Promise<boolean> => {
     const loadId = ++sessionLoadIdRef.current;
     try {
       if (showLoading) setLoading(true);
@@ -877,6 +962,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       if (loadId !== sessionLoadIdRef.current) return false;
       sessionListVersionRef.current = data.sessionListVersion;
       setAllSessions(data.sessions);
+      alongside?.();
       // A summary row whose file changed since the last scan is the only one
       // without its details; the others were checked against their file's stat.
       const needsDetails = data.sessions.some((session) => session.detailsPending === true);
@@ -963,44 +1049,47 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     return () => { cancelled = true; };
   }, []);
 
-  // A failure belongs to the project it happened on.
-  useEffect(() => {
-    setFileManagerError(null);
-  }, [selectedCwd, selectedCwdProp]);
-
-  /** Resolves true when it failed: the message is then in the files' body. */
-  const openInFileManager = useCallback(async (): Promise<boolean> => {
-    const dir = selectedCwd ?? selectedCwdProp;
-    if (!dir) return false;
+  /**
+   * Opens a folder (`cwd`: a project's menu) or shows a file or folder
+   * selected in its own (`reveal`: a file row's menu) in the OS file manager.
+   * Resolves the message to show where it was asked, or null.
+   */
+  const openInFileManager = useCallback(async (request: { cwd: string } | { reveal: string }): Promise<string | null> => {
     try {
       const res = await fetch("/api/open-in-explorer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: dir }),
+        body: JSON.stringify(request),
       });
-      if (res.ok) {
-        setFileManagerError(null);
-        return false;
-      }
+      if (res.ok) return null;
       const data = await res.json().catch(() => ({})) as { error?: string };
-      setFileManagerError(data.error ?? `HTTP ${res.status}`);
+      const code = data.error ?? `HTTP ${res.status}`;
+      return t(FILE_MANAGER_ERROR_KEYS[code] ?? code);
     } catch (error) {
-      setFileManagerError(errorMessage(error));
+      return errorMessage(error);
     }
-    return true;
-  }, [selectedCwd, selectedCwdProp]);
+  }, [t]);
 
+  // Offered only where the server can raise a window for this browser (not
+  // from another computer, not on a platform without one).
+  const fileManagerPlatformName = fileManager?.supported ? fileManager.platform : null;
   const fileManagerLabel = t(
-    fileManager?.platform === "darwin"
+    fileManagerPlatformName === "darwin"
       ? "sidebar.openInFinder"
-      : fileManager?.platform === "win32"
+      : fileManagerPlatformName === "win32"
         ? "sidebar.openInExplorer"
         : "sidebar.openInFileManager",
   );
-  const fileManagerUnavailable = fileManager?.supported === false;
-  const fileManagerErrorMessage = fileManagerError
-    ? t(FILE_MANAGER_ERROR_KEYS[fileManagerError] ?? fileManagerError)
-    : null;
+  const fileManagerReveal = useMemo(() => fileManagerPlatformName === null ? undefined : {
+    label: t(
+      fileManagerPlatformName === "darwin"
+        ? "sidebar.showInFinder"
+        : fileManagerPlatformName === "win32"
+          ? "sidebar.showInExplorer"
+          : "sidebar.showInFileManager",
+    ),
+    reveal: (path: string) => openInFileManager({ reveal: path }),
+  }, [fileManagerPlatformName, openInFileManager, t]);
 
   // Persist unread markers so they survive a browser refresh before the user
   // has actually opened the completed session.
@@ -1076,9 +1165,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         currentSuppressedCompletionSessionIdsRef.current = new Set(
           data.completionNotificationSuppressedSessionIds ?? [],
         );
-        setRunningSessionIds((previous) => sameIdsOr(previous, data.runningSessionIds ?? []));
-        setAwaitingInputSessionIds((previous) => sameIdsOr(previous, data.awaitingInputSessionIds ?? []));
-        setSubagentsActiveSessionIds((previous) => sameIdsOr(previous, data.subagentsActiveSessionIds ?? []));
+        // The answer's running sets, applied with the session list of the same
+        // moment: a run's end comes with a new list version (agent_end), and
+        // shown before that list, the session would be idle with the times
+        // of before its run.
+        let applied = false;
+        const applyRunning = () => {
+          if (applied || stopped || controller !== current) return;
+          applied = true;
+          setRunningSessionIds((previous) => sameIdsOr(previous, data.runningSessionIds ?? []));
+          setAwaitingInputSessionIds((previous) => sameIdsOr(previous, data.awaitingInputSessionIds ?? []));
+          setSubagentsActiveSessionIds((previous) => sameIdsOr(previous, data.subagentsActiveSessionIds ?? []));
+        };
         // Pins and archive changed in another window: reload them.
         noteUiRevision(data.sessionUiStateRevision);
         // The first summary may still be in flight (a cold disk): its version is
@@ -1087,8 +1185,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         const summaryInFlight = summaryStartedAt !== null && Date.now() - summaryStartedAt < INITIAL_SUMMARY_WAIT_MS;
         if (!summaryInFlight && data.sessionListVersion !== sessionListVersionRef.current) {
           // Reuse the invalidated cache; forcing a scan would change the version again.
-          await loadSessions();
+          await loadSessions(false, false, false, applyRunning);
         }
+        // No list to wait for, or its load failed or was overtaken.
+        applyRunning();
       } catch {
         // Keep the last known state; the next visible-tab poll retries.
         outcome = current.signal.aborted ? "aborted" : "error";
@@ -1617,6 +1717,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     () => effectiveGroupExpansion(groupExpansion, keptOpenGroups),
     [groupExpansion, keptOpenGroups],
   );
+  // The recent list: the viewer's day and the folded date sections.
+  const today = useLocalDayStart();
+  const recentList = useMemo<RecentListInput>(
+    () => ({ today, collapsed: new Set(recentCollapsed) }),
+    [today, recentCollapsed],
+  );
   const model = useMemo(() => buildSessionTree({
     sessions: allSessions,
     uiState,
@@ -1628,7 +1734,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+    listMode,
+    recent: recentList,
+  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed, listMode, recentList]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
@@ -1744,11 +1852,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     [],
   );
 
-  // A family's row where the tree shows it now (pinned, in its group, or in
-  // the open archive view), else the selected tab.
+  // A family's row where the tree shows it now (pinned, in its group, in the
+  // recent list, or in the open archive view), else the selected tab.
   const familyRowButton = useCallback((rootId: string): HTMLElement | null => {
     const panel = sessionsPanelRef.current;
-    for (const context of ["pinned", "group", "archive"]) {
+    for (const context of ["pinned", "group", "recent", "archive"]) {
       const key = CSS.escape(`session:${context}:${rootId}`);
       const button = panel?.querySelector<HTMLElement>(`[data-row-key="${key}"] .session-tree-main`);
       if (button && button.getClientRects().length > 0) return button;
@@ -2140,11 +2248,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       runningIds: runningSessionIds,
       groupExpansion: shownGroupExpansion,
       pinnedCollapsed,
+      listMode,
+      recent: recentList,
     }, sessionId);
     if (!location) return;
     if (location.unfoldPinned) {
       setPinnedCollapsed(false);
       savePinnedCollapsed(false);
+    }
+    const unfoldRecent = location.unfoldRecent;
+    if (unfoldRecent) {
+      const next = recentCollapsed.filter((section) => section !== unfoldRecent);
+      setRecentCollapsed(next);
+      saveRecentCollapsed(next);
     }
     if (location.unfoldGroup) {
       const next = { ...groupExpansion };
@@ -2161,7 +2277,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       block: "nearest",
       ...(focus?.sessionId === sessionId ? { takeFocusFrom: focus.takeFocusFrom } : {}),
     });
-  }, [selectedSessionId, allSessions, uiState, runningSessionIds, shownGroupExpansion, groupExpansion, pinnedCollapsed, loading, uiStateLoaded, sidebarPrefsRestored, mainTreeShown, saveGroupChoices]);
+  }, [selectedSessionId, allSessions, uiState, runningSessionIds, shownGroupExpansion, groupExpansion, pinnedCollapsed, listMode, recentList, recentCollapsed, loading, uiStateLoaded, sidebarPrefsRestored, mainTreeShown, saveGroupChoices]);
 
   // Fork (the row menu's F): the server copies the family's current branch
   // into a new session beside it (POST /api/sessions/[id]/fork) and leaves
@@ -2541,6 +2657,31 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     setMoreShown((prev) => showLessFamilies(prev, key));
   }, []);
 
+  // The toolbar's Sort by date: the list switches between project groups and
+  // the recent list, and the open session's row is brought into view in the
+  // list it switched to, as when it was opened. Its cell is always there, so
+  // the row's widths never change with the view: on the files tab or over
+  // the archive view it shows the session list, as the recent one (as the
+  // search opens the sessions' where the files have none to offer).
+  const handleToggleListMode = () => {
+    const listInView = (stacked || sidebarTab === "sessions") && !archiveView;
+    const next: SidebarListMode = listInView && listMode === "recent" ? "projects" : "recent";
+    if (!listInView) {
+      switchTab("sessions");
+      if (archiveView) setArchiveView(false);
+    }
+    setListMode(next);
+    saveListMode(next);
+    openRevealRef.current = selectedSessionId;
+  };
+  const handleToggleRecentSection = (section: RecentSection) => {
+    const next = recentCollapsed.includes(section)
+      ? recentCollapsed.filter((item) => item !== section)
+      : [...recentCollapsed, section];
+    setRecentCollapsed(next);
+    saveRecentCollapsed(next);
+  };
+
   const handleTogglePinned = () => {
     const next = !pinnedCollapsed;
     setPinnedCollapsed(next);
@@ -2652,6 +2793,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
         shortcut: "T",
         onSelect: () => openProjectInNewTab(project),
       },
+      ...(fileManagerPlatformName === null ? [] : [{
+        type: "item" as const,
+        id: "open-in-file-manager",
+        label: fileManagerLabel,
+        icon: <FolderOpenIcon />,
+        onSelect: () => {
+          void openInFileManager({ cwd: project.root }).then((error) => {
+            if (error) showToast(error);
+          });
+        },
+      }]),
       { type: "separator", id: "separator-layout" },
       {
         type: "item",
@@ -2728,20 +2880,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     onConfirm: () => void;
     onCancel: () => void;
   }): ReactNode => (
-    <div className="sidebar-menu-question">
-      <div className="sidebar-menu-header" title={headingTitle}>{heading}</div>
-      {notes.map((note) => <p key={note} className="sidebar-menu-question-text">{note}</p>)}
-      <div className="sidebar-menu-question-buttons">
-        <button type="button" className="sidebar-menu-question-confirm" disabled={count === 0} onClick={onConfirm}>
-          {t("sidebar.deleteCount", { count })}
-        </button>
-        {!isMobile && (
-          <button type="button" className="sidebar-menu-question-cancel" data-sidebar-menu-autofocus="" onClick={onCancel}>
-            {t("sidebar.cancel")}
-          </button>
-        )}
-      </div>
-    </div>
+    <SidebarMenuQuestion
+      heading={heading}
+      headingTitle={headingTitle}
+      notes={notes}
+      confirmLabel={t("sidebar.deleteCount", { count })}
+      confirmDisabled={count === 0}
+      cancelLabel={t("sidebar.cancel")}
+      sheet={isMobile}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
   );
 
   const projectDeleteBody = (project: SidebarProject): ReactNode => {
@@ -2879,6 +3028,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     menuItems = archiveGroupMenuItems(project);
     if (menu.askDelete) menuBody = archiveDeleteBody({ projectKey: project.key }, project);
     menuWidth = 248;
+  } else if (menu?.kind === "upload") {
+    menuLabel = t("sidebar.uploadFilesTitle");
+    // Picked from the menu's click, so the browser still opens its file dialog.
+    const pick = (kind: "files" | "folder") => {
+      // The upload's progress and summary are the tree's: a folded section opens.
+      if (stacked && filesCollapsed) setFilesSectionCollapsed(false);
+      fileExplorerRef.current?.openUploadPicker(kind);
+    };
+    menuItems = [
+      { type: "item", id: "upload-files", label: t("sidebar.uploadFiles"), icon: <FileIcon />, onSelect: () => pick("files") },
+      { type: "item", id: "upload-folder", label: t("sidebar.uploadFolder"), icon: <FolderIcon />, onSelect: () => pick("folder") },
+    ];
   } else if (menu?.kind === "archive") {
     menuTitle = t("sidebar.archived");
     menuLabel = t("sidebar.archiveActions");
@@ -2893,7 +3054,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     : menu?.kind === "group" ? `group:${menu.project.key}`
     : menu?.kind === "archive-group" ? `archive:${menu.project.key}` : null;
 
-  const treeLayout = isMobile ? "mobile" : "desktop";
+  const treeLayout = touchRows ? "mobile" : "desktop";
   // Until pins and archive have loaded, archived rows would flash in.
   const treeLoading = loading || !uiStateLoaded;
   const treeProps = {
@@ -2909,6 +3070,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
     onShowMore: handleShowMore,
     onShowLess: handleShowLess,
     onTogglePinned: handleTogglePinned,
+    onToggleRecentSection: handleToggleRecentSection,
     onArchiveFamily: archiveFamily,
     onRestoreFamily: restoreFamily,
     onOpenRowMenu: openRowMenu,
@@ -2960,6 +3122,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
   // sessions' search alone; the files section's header has the files'.
   const sessionsShown = stacked || sidebarTab === "sessions";
   const searchesFiles = !stacked && sidebarTab === "files" && explorerCwd !== null;
+  // Sort by date is pressed while the recent list is in view: not on the
+  // files tab, nor under the archive view.
+  const listModePressed = listMode === "recent" && sessionsShown && !archiveView;
   // What the toolbar row's widths depend on: New's label, and the tabs (the
   // chosen tab's label is bolder, the files tab carries the count). The
   // brand's text reports its own changes (fitHeader).
@@ -2984,35 +3149,34 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       <TerminalIcon size={keyIconSize} />
     </ToolbarIconButton>
   );
-  const fileManagerButton = (
-    <ToolbarIconButton
-      onClick={() => {
-        void openInFileManager().then((failed) => {
-          // Its failure shows in the files' body. Below the sessions this key
-          // is in the header row, there while the section is folded too: a
-          // folded section opens, else the message would wait unseen.
-          if (failed && stacked) setFilesSectionCollapsed(false);
-        });
-      }}
-      disabled={!explorerCwd || fileManagerUnavailable}
-      title={fileManagerUnavailable
-        ? t(fileManager?.reason === "remote" ? "sidebar.openInExplorerRemoteOnly" : "sidebar.openInExplorerUnsupported")
-        : fileManagerLabel}
-    >
-      <FolderIcon size={keyIconSize} />
-    </ToolbarIconButton>
-  );
   const uploadButton = (
     <ToolbarIconButton
+      ref={uploadButtonRef}
       onClick={() => {
-        // The upload's progress and summary are the tree's: a folded section opens.
-        if (stacked && filesCollapsed) setFilesSectionCollapsed(false);
-        fileExplorerRef.current?.openUploadPicker();
+        const opener = uploadButtonRef.current;
+        if (!opener) return;
+        setMenu((current) => (current?.kind === "upload" ? null : { kind: "upload", anchor: buttonAnchor(opener, "end"), opener }));
       }}
       disabled={!explorerCwd || explorerUploadBusy}
+      menu
+      expanded={menu?.kind === "upload"}
       title={t("sidebar.uploadFilesTitle")}
     >
       <UploadIcon size={keyIconSize} />
+    </ToolbarIconButton>
+  );
+  const newFolderButton = (
+    <ToolbarIconButton
+      onClick={() => {
+        if (stacked && filesCollapsed) setFilesSectionCollapsed(false);
+        // The new folder's row is in the tree: the changes view gives way.
+        setChangesCollapsed(true);
+        fileExplorerRef.current?.createFolder();
+      }}
+      disabled={!explorerCwd}
+      title={t("files.newFolder")}
+    >
+      <FolderPlusIcon size={keyIconSize} />
     </ToolbarIconButton>
   );
   const refreshButton = (
@@ -3097,10 +3261,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
       )}
       {/* One toolbar row, in the cells of the chat's top bar beside it (its
           line continues that bar's): Sessions | Files, then New and the
-          search of the tab in view. Only the two tabs are the tablist. With
-          the files below the sessions there is nothing to choose: the brand
-          stands there (the panel's anchor, the versions on a click), and
-          the search is the sessions'. */}
+          search of the tab in view, then Sort by date, always there. Only the two tabs are the tablist. With the files
+          below the sessions there is nothing to choose: the brand stands
+          there (the panel's anchor, the versions on a click), and the
+          search is the sessions'. */}
       <div ref={headerRef} className="sidebar-header">
         {stacked && <PiWebTitle onWidthChange={fitHeader} />}
         {!stacked && (
@@ -3174,6 +3338,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
           className={`sidebar-search-toggle${(searchesFiles ? fileSearchOpen : sessionSearchOpen) ? " is-active" : ""}`}
         >
           <SearchIcon size={16} />
+        </button>
+        <button
+          type="button"
+          className={`sidebar-search-toggle sidebar-list-mode-toggle${listModePressed ? " is-active" : ""}`}
+          aria-pressed={listModePressed}
+          aria-label={t("sidebar.listRecent")}
+          title={t("sidebar.listRecent")}
+          onClick={handleToggleListMode}
+        >
+          <ClockIcon size={15} />
         </button>
       </div>
 
@@ -3330,8 +3504,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
             </button>
             <div className="sidebar-files-keys" role="group" aria-label={t("sidebar.fileActions")}>
               {terminalButton}
-              {fileManagerButton}
               {uploadButton}
+              {newFolderButton}
               {refreshButton}
               {ignoredFilesButton()}
               {changesButton}
@@ -3401,8 +3575,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
             {!stacked && explorerCwd && (
               <div className="sidebar-files-actions" role="group" aria-label={t("sidebar.fileActions")}>
                 {onOpenTerminal && terminalButton}
-                {fileManagerButton}
                 {uploadButton}
+                {newFolderButton}
                 {refreshButton}
                 {ignoredFilesButton("sidebar-files-views-start")}
                 {changesButton}
@@ -3410,12 +3584,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
             )}
           </div>
 
-          {explorerCwd && fileManagerErrorMessage && (
-            <div role="alert" className="sidebar-files-error">
-              <span className="sidebar-files-error-text">{fileManagerErrorMessage}</span>
-              <DismissButton onClick={() => setFileManagerError(null)} title={t("files.dismissError")} />
-            </div>
-          )}
           {/* Mounted whenever there is a cwd, also while the tab or the folded
               section hides it, so the expanded tree, a search and an upload in
               progress survive a switch. */}
@@ -3425,6 +3593,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
                 ref={fileExplorerRef}
                 cwd={explorerCwd}
                 onOpenFile={onOpenFile ?? (() => {})}
+                onToast={showFileToast}
+                fileManager={fileManagerReveal}
+                mobile={isMobile}
+                onEntryMoved={onFileEntryMoved}
+                onEntryDeleted={onFileEntryDeleted}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}
                 onAtMentions={onAtMentions}
@@ -3438,6 +3611,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onSelectSid
             )}
           </div>
         </div>
+        <SidebarToast
+          toast={fileToast}
+          onDismiss={dismissFileToast}
+          dismissLabel={t("sidebar.dismiss")}
+          regionClassName="sidebar-files-toast-region"
+        />
       </div>
 
       <SidebarMenu

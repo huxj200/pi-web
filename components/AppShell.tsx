@@ -11,7 +11,7 @@ import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { movePanelTab, orderPanelTabs } from "@/lib/panel-tab-order";
-import { openFileTab, saveFileViewerState, saveParkedFileViewerState, switchFileWorkspace, type ParkedFileWorkspace } from "./file-tab-state";
+import { dropDeletedFileTabs, openFileTab, retargetFileTabId, retargetFileTabs, saveFileViewerState, saveParkedFileViewerState, switchFileWorkspace, type ParkedFileWorkspace } from "./file-tab-state";
 import { SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
 import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
@@ -33,7 +33,7 @@ import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
-import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
+import { buildAtMentionText, buildAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import {
   claimExtensionAttentionNotification,
   shouldShowBrowserNotification,
@@ -78,6 +78,7 @@ import type { AgentEndInfo, NewSessionChoices } from "@/hooks/useAgentSession";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { formatActiveDuration, formatCompactCount, formatCostShort } from "@/lib/session-stats-format";
 import type { FileViewerState } from "@/lib/file-viewer-state";
+import type { FileLinkTarget } from "@/lib/file-links";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { createSideChat, deleteSideChat } from "@/lib/side-chat-client";
 import { sideChatHit } from "@/lib/session-search-hit";
@@ -737,8 +738,8 @@ export function AppShell() {
     [],
   );
 
-  const handleAtMentions = useCallback((relativePaths: string[]) => {
-    const mentions = buildFileAtMentionsText(relativePaths);
+  const handleAtMentions = useCallback((entries: Array<{ path: string; isDir: boolean }>) => {
+    const mentions = buildAtMentionsText(entries);
     if (mentions) chatInputRef.current?.insertText(mentions);
     if (isMobile) { setRightPanelOpen(false); setSidebarOpen(false); }
   }, [isMobile]);
@@ -1344,17 +1345,17 @@ export function AppShell() {
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff"; page?: number },
+    options?: { sourceSessionId?: string | null; modeHint?: "diff"; target?: FileLinkTarget },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
-    const page = options?.page;
     const tabId = `file:${filePath}`;
     setFileTabs((prev) => openFileTab(prev, {
       fileName,
       filePath,
       modeHint,
-      page,
+      page: options?.target?.page,
+      lines: options?.target?.lines,
       sourceSessionId,
       tabId,
     }));
@@ -1364,8 +1365,41 @@ export function AppShell() {
     if (isMobile) setSidebarOpen(false);
   }, [isMobile]);
 
-  const handleOpenLinkedFile = useCallback((filePath: string, page?: number) => {
-    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
+  // The explorer moved, renamed or deleted an entry: open tabs of it (or of
+  // anything below a folder) follow it or close, parked workspaces included.
+  const handleFileEntryMoved = useCallback((from: string, to: string) => {
+    setFileTabs((prev) => retargetFileTabs(prev, from, to));
+    setActiveFileTabId((id) => (id ? retargetFileTabId(id, from, to) : id));
+    setPanelTabOrder((order) => order.map((id) => retargetFileTabId(id, from, to)));
+    for (const [key, workspace] of fileWorkspaceStatesRef.current) {
+      fileWorkspaceStatesRef.current.set(key, {
+        ...workspace,
+        tabs: retargetFileTabs(workspace.tabs, from, to),
+        activeTabId: workspace.activeTabId ? retargetFileTabId(workspace.activeTabId, from, to) : null,
+      });
+    }
+  }, []);
+
+  const handleFileEntryDeleted = useCallback((deleted: string) => {
+    const remaining = dropDeletedFileTabs(fileTabs, deleted);
+    if (remaining !== fileTabs) {
+      setFileTabs(remaining);
+      setActiveFileTabId((id) => {
+        if (!id || remaining.some((tab) => tab.id === id) || !id.startsWith("file:")) return id;
+        return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? lastAgentTabId(agentTabs);
+      });
+      if (remaining.length === 0 && terminalTabs.length === 0 && agentTabs.length === 0) setRightPanelOpen(false);
+    }
+    for (const [key, workspace] of fileWorkspaceStatesRef.current) {
+      const tabs = dropDeletedFileTabs(workspace.tabs, deleted);
+      if (tabs === workspace.tabs) continue;
+      const activeTabId = tabs.some((tab) => tab.id === workspace.activeTabId) ? workspace.activeTabId : tabs.at(-1)?.id ?? null;
+      fileWorkspaceStatesRef.current.set(key, { ...workspace, tabs, activeTabId, open: workspace.open && activeTabId !== null });
+    }
+  }, [agentTabs, fileTabs, terminalTabs]);
+
+  const handleOpenLinkedFile = useCallback((filePath: string, target?: FileLinkTarget) => {
+    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, target });
   }, [handleOpenFile, selectedSession?.id]);
 
   const handleOpenTerminal = useCallback((cwd: string) => {
@@ -1699,6 +1733,8 @@ export function AppShell() {
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
+        onFileEntryMoved={handleFileEntryMoved}
+        onFileEntryDeleted={handleFileEntryDeleted}
         onOpenTerminal={handleOpenTerminal}
         explorerRefreshKey={explorerRefreshKey}
         onExplorerRefresh={handleExplorerRefresh}
@@ -3097,6 +3133,7 @@ export function AppShell() {
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialPage={activeFileTab.page}
+              initialLines={activeFileTab.lines}
               initialState={activeFileTab.viewerState}
               watchEnabled={rightPanelOpen}
               onStateChange={(viewerState) => handleFileViewerStateChange(
@@ -3107,10 +3144,10 @@ export function AppShell() {
               )}
               onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
               onAtMention={handleAtMention}
-              onOpenFile={(filePath, page) => handleOpenFile(
+              onOpenFile={(filePath, target) => handleOpenFile(
                 filePath,
                 getFileName(filePath),
-                { sourceSessionId: activeFileTab.sourceSessionId, page },
+                { sourceSessionId: activeFileTab.sourceSessionId, target },
               )}
             />
           ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) && !activeAgentTab ? (
